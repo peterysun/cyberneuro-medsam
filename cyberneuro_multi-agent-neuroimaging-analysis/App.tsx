@@ -1746,6 +1746,60 @@ const App: React.FC = () => {
         return;
       }
 
+          // ── WM_ANALYSIS intent ──
+    if (effectiveIntent === 'WM_ANALYSIS') {
+      addMessage(AgentType.ORCHESTRATOR, "Loading white matter brain chart...");
+
+      try {
+        const response = await fetch('/data/example_centiles.csv');
+
+        if (!response.ok) {
+          addMessage(AgentType.SYSTEM,
+            "Could not load white matter centile data. Please ensure the centiles CSV is available."
+          );
+          setIsProcessing(false);
+          finalizeWorkflow('error');
+          return;
+        }
+
+        const text = await response.text();
+        const lines = text.trim().split('\n');
+        const headers = lines[0].split(',');
+
+        const csv: Record<string, number>[] = lines.slice(1).map(line => {
+          const values = line.split(',');
+          const row: Record<string, number> = {};
+          headers.forEach((h, i) => {
+            row[h.trim()] = parseFloat(values[i]);
+          });
+          return row;
+        });
+
+        const tractMetrics = headers
+          .filter(h => h.startsWith('male_') && h.endsWith('_0.5_centile'))
+          .map(h => h.replace('male_', '').replace('_0.5_centile', ''));
+
+        addVisualization({
+          type: VisualizationType.WM_BRAIN_CHART,
+          title: 'White Matter Brain Chart',
+          data: { csv, tractMetrics },
+          timestamp: new Date().toISOString(),
+        });
+
+        addMessage(AgentType.EXECUTOR,
+          `White matter brain chart loaded. ${tractMetrics.length} tract-metric combinations available. Use the selectors to explore different tracts and metrics. You can also enter a patient age and value to overlay them on the normative trajectory.`
+        );
+
+      } catch (error) {
+        addMessage(AgentType.SYSTEM, "Error loading white matter data.");
+        finalizeWorkflow('error');
+      }
+
+      setIsProcessing(false);
+      finalizeWorkflow('done');
+      return;
+    }
+
           // ── SEGMENTATION intent ──
     if (effectiveIntent === 'SEGMENTATION') {
       addMessage(AgentType.ORCHESTRATOR, "Detected segmentation request. Running MedSAM organ segmentation...");

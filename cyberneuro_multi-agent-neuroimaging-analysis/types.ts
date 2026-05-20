@@ -48,6 +48,8 @@ export interface HubDetectionResult {
   hub_roi_images?: Record<string, string>;
 }
 
+
+
 export interface ChatMessage {
   id: string;
   role: AgentType;
@@ -84,7 +86,8 @@ export enum VisualizationType {
   CLUSTERING_DASHBOARD = 'CLUSTERING_DASHBOARD',
   STRATIFICATION_RESULT = 'STRATIFICATION_RESULT',
   SVM_BOUNDARY = 'SVM_BOUNDARY',
-  BIDS_CONVERSION = 'BIDS_CONVERSION'
+  BIDS_CONVERSION = 'BIDS_CONVERSION',
+  WM_BRAIN_CHART = 'WM_BRAIN_CHART'
 }
 
 export interface ToolVisualization {
@@ -104,6 +107,13 @@ export interface HtmlVisualizationData {
   html: string;
   heightPx?: number;
   version?: string;
+}
+
+export interface WMBrainChartData {
+  csv: Record<string, number>[];
+  tractMetrics: string[];
+  patientAge?: number;
+  patientValue?: number;
 }
 
 export interface AgentState {

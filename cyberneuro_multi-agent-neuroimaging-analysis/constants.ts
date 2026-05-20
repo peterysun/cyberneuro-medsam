@@ -28,10 +28,12 @@ export const PROMPTS = {
     4. "DATA_MANIPULATION": The user wants to manipulate the dataset (e.g., filter, sort, merge).
     5. "PREPROCESSING": The user describes a study with raw neuroimaging data needing conversion (DICOM to BIDS), processing pipeline, or mentions raw scans, fMRI data, MRI scanner details.
     6. "SEGMENTATION": The user wants to segment an organ or tumor in a medical scan (e.g., "segment the kidney", "outline the liver", "delineate the tumor in the scan").
+    7. "WM_ANALYSIS": The user wants to view white matter brain development charts, normative white matter trajectories, or overlay a patient on a white matter lifespan chart.
+
 
     User Query: "${query}"
 
-    Return strictly a JSON object: { "category": "RESEARCH" } or { "category": "GENERAL" } or { "category": "VISION" } or { "category": "DATA_MANIPULATION" } or { "category": "PREPROCESSING" } or { "category": "SEGMENTATION" }
+    Return strictly a JSON object: { "category": "RESEARCH" } or { "category": "GENERAL" } or { "category": "VISION" } or { "category": "DATA_MANIPULATION" } or { "category": "PREPROCESSING" } or { "category": "SEGMENTATION" } or { "category": "WM_ANALYSIS" }
   `,
 
   VISION_AGENT: (query: string) => `
