@@ -1,11 +1,10 @@
-# ─── Organ Metadata ────────────────────────────────────────────────────────
 # Defines display properties, typical MR/CT window settings,
 # and expected anatomical positions (rough prior for bbox initialization).
 
 organs:
   right_kidney:
     display_name: "Right Kidney"
-    aliases: ["right kidney", "right_kidney", "kidney_right"]
+    aliases: ["right kidney", "right_kidney", "kidney_right", "renal right"]
     modality: mr
     intensity_window:
       method: percentile
@@ -13,18 +12,21 @@ organs:
       high: 99.0
     # Rough axial slice range as fraction of total slices [start, end]
     typical_axial_range: [0.3, 0.7]
+    # Bounding box as fraction of image [x1, y1, x2, y2]
+    typical_bbox_fraction: [0.55, 0.30, 0.88, 0.70]
     color: [255, 140, 0]    # orange (RGB)
     label_value: 1
 
   left_kidney:
     display_name: "Left Kidney"
-    aliases: ["left kidney", "left_kidney", "kidney_left"]
+    aliases: ["left kidney", "left_kidney", "kidney_left", "renal left"]
     modality: mr
     intensity_window:
       method: percentile
       low: 1.0
       high: 99.0
     typical_axial_range: [0.3, 0.7]
+    typical_bbox_fraction: [0.12, 0.30, 0.45, 0.70]
     color: [255, 165, 0]    # orange variant
     label_value: 2
 
@@ -37,6 +39,7 @@ organs:
       low: 1.0
       high: 99.0
     typical_axial_range: [0.2, 0.6]
+    typical_bbox_fraction: [0.30, 0.20, 0.70, 0.65]
     color: [220, 20, 60]    # crimson
     label_value: 3
 
@@ -49,6 +52,7 @@ organs:
       low: 1.0
       high: 99.0
     typical_axial_range: [0.2, 0.6]
+    typical_bbox_fraction: [0.35, 0.25, 0.65, 0.60]
     color: [255, 69, 0]     # red-orange
     label_value: 4
 
@@ -61,6 +65,7 @@ organs:
       center: 60
       width: 160
     typical_axial_range: [0.25, 0.6]
+    typical_bbox_fraction: [0.40, 0.20, 0.90, 0.65]
     color: [139, 90, 43]    # brown
     label_value: 5
 
@@ -73,6 +78,7 @@ organs:
       center: 60
       width: 160
     typical_axial_range: [0.3, 0.6]
+    typical_bbox_fraction: [0.10, 0.30, 0.40, 0.65]
     color: [128, 0, 128]    # purple
     label_value: 6
 
@@ -85,5 +91,6 @@ organs:
       low: 1.0
       high: 99.0
     typical_axial_range: [0.0, 1.0]
+    typical_bbox_fraction: [0.10, 0.10, 0.90, 0.90]
     color: [0, 200, 200]    # cyan
     label_value: 7
