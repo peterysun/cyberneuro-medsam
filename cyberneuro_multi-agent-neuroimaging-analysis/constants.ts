@@ -20,17 +20,18 @@ export const AGENT_COLORS = {
 export const PROMPTS = {
   ORCHESTRATOR_CLASSIFY: (query: string) => `
     You are an Orchestrator Agent for a neuroimaging analysis system.
-    
-    Classify the User Query into one of five categories:
+
+    Classify the User Query into one of six categories:
     1. "RESEARCH": The user wants to analyze data, inspect columns, perform statistics, find correlations, compare groups, or search for literature.
     2. "GENERAL": The user wants to modify the visualization (e.g., change color, title, size), ask a general question unconnected to the dataset, or perform simple UI tasks.
     3. "VISION": The user asks about understanding/interpreting image content (e.g., "what does this scan show", "describe this uploaded image", "is there lesion/atrophy/signs in the image").
     4. "DATA_MANIPULATION": The user wants to manipulate the dataset (e.g., filter, sort, merge).
     5. "PREPROCESSING": The user describes a study with raw neuroimaging data needing conversion (DICOM to BIDS), processing pipeline, or mentions raw scans, fMRI data, MRI scanner details.
+    6. "SEGMENTATION": The user wants to segment an organ or tumor in a medical scan (e.g., "segment the kidney", "outline the liver", "delineate the tumor in the scan").
 
     User Query: "${query}"
 
-    Return strictly a JSON object: { "category": "RESEARCH" } or { "category": "GENERAL" } or { "category": "VISION" } or { "category": "DATA_MANIPULATION" } or { "category": "PREPROCESSING" }
+    Return strictly a JSON object: { "category": "RESEARCH" } or { "category": "GENERAL" } or { "category": "VISION" } or { "category": "DATA_MANIPULATION" } or { "category": "PREPROCESSING" } or { "category": "SEGMENTATION" }
   `,
 
   VISION_AGENT: (query: string) => `

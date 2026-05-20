@@ -1746,6 +1746,66 @@ const App: React.FC = () => {
         return;
       }
 
+          // ── SEGMENTATION intent ──
+    if (effectiveIntent === 'SEGMENTATION') {
+      addMessage(AgentType.ORCHESTRATOR, "Detected segmentation request. Running MedSAM organ segmentation...");
+
+      // Extract organ name from query using simple keyword matching
+      const organKeywords = ['right kidney', 'left kidney', 'liver', 'heart', 'spleen', 'myocardium'];
+      let detectedOrgan = 'custom';
+      for (const organ of organKeywords) {
+        if (query.toLowerCase().includes(organ)) {
+          detectedOrgan = organ;
+          break;
+        }
+      }
+
+      // Extract scan path from query
+      const pathMatch = query.match(/\/[^\s]+\.nii(?:\.gz)?/);
+      const scanPath = pathMatch ? pathMatch[0] : '';
+
+      if (!scanPath) {
+        addMessage(AgentType.SYSTEM, "Please provide a path to a NIfTI scan file (.nii.gz) in your message.");
+        setIsProcessing(false);
+        finalizeWorkflow('error');
+        return;
+      }
+
+      try {
+        addMessage(AgentType.EXECUTOR, `Segmenting ${detectedOrgan} in ${scanPath}...`);
+
+        const response = await fetch('http://localhost:8099/segment', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ organ: detectedOrgan, scan_path: scanPath })
+        });
+
+        const result = await response.json();
+
+        if (result.status === 'success') {
+          addMessage(AgentType.EXECUTOR,
+            `✅ Segmentation complete!\n\n` +
+            `Organ: ${result.organ}\n` +
+            `Slice used: ${result.slice_used}\n` +
+            `Bounding box: [${result.box_used.join(', ')}]\n` +
+            `Voxels segmented: ${result.voxel_count.toLocaleString()}\n` +
+            `Mask saved to: ${result.mask_path}\n` +
+            `Overlay saved to: ${result.overlay_path}`
+          );
+        } else {
+          addMessage(AgentType.SYSTEM, `Segmentation failed: ${result.error}`);
+        }
+      } catch (error) {
+        addMessage(AgentType.SYSTEM, `Error connecting to MedSAM server. Make sure medsam_server.py is running on port 8099.`);
+        finalizeWorkflow('error');
+      }
+
+      setIsProcessing(false);
+      finalizeWorkflow('done');
+      return;
+    }
+
+
       // ── PREPROCESSING intent ──
       if (effectiveIntent === 'PREPROCESSING') {
         addMessage(AgentType.PREPROCESSOR, "I'll help you preprocess your neuroimaging data. Please provide the required directory paths below.");

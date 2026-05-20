@@ -126,6 +126,28 @@ export const INTERNAL_TOOLS: McpTool[] = [
       required: ['x_column', 'y_column', 'target_column']
     }
   }
+
+  ,
+{
+  name: 'SEGMENT_ORGAN',
+  description: 'Segments an organ in a medical CT or MRI scan using MedSAM. Use when the user asks to segment, outline, or delineate an organ or tumor in a scan file (.nii.gz).',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      organ: {
+        type: 'string',
+        description: 'The organ to segment (e.g. right kidney, left kidney, liver, heart, spleen)'
+      },
+      scan_path: {
+        type: 'string',
+        description: 'Path to the NIfTI scan file (.nii.gz)'
+      }
+    },
+    required: ['organ', 'scan_path']
+  }
+}
+
+
 ];
 
 
@@ -396,7 +418,36 @@ export const executeInternalTool = async (toolName: string, args: any, data: Dat
 
       return calculateLinearSVM(data, x, y, target);
   }
-  
+
+  if (toolName === 'SEGMENT_ORGAN') {
+  const organ = args.organ;
+  const scanPath = args.scan_path;
+
+  if (!organ) throw new Error("Missing required parameter 'organ'.");
+  if (!scanPath) throw new Error("Missing required parameter 'scan_path'.");
+
+  const response = await fetch('http://localhost:8099/segment', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      organ: organ,
+      scan_path: scanPath
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`MedSAM server error: ${response.status} ${response.statusText}`);
+  }
+
+  const result = await response.json();
+
+  if (result.status === 'error') {
+    throw new Error(`MedSAM segmentation failed: ${result.error}`);
+  }
+
+  return result;
+}
+
   throw new Error(`Tool ${toolName} not found internally.`);
 };
 
