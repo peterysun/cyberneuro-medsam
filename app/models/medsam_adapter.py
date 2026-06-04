@@ -9,7 +9,8 @@ Reference: https://github.com/bowang-lab/MedSAM
 """
 
 from __future__ import annotations
-
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
 import os
 import sys
 from pathlib import Path
@@ -100,7 +101,11 @@ class MedSAMAdapter(BaseSegAdapter):
         # Determine device
         device = _resolve_device(self.device)
 
+        import torch
+        _orig_load = torch.load
+        torch.load = lambda f, **kw: _orig_load(f, map_location="cpu", **{k:v for k,v in kw.items() if k!="map_location"})
         model = sam_model_registry["vit_b"](checkpoint=checkpoint)
+        torch.load = _orig_load
         model = model.to(device)
         model.eval()
 

@@ -153,6 +153,11 @@ class Propagator:
             )
             try:
                 seg_result = self.adapter.predict_slice(img_slice, prompt)
+                # Stop propagating if mask is too small — organ has ended
+                min_voxels = int(ref_mask.sum() * 0.60)  # must be at least 15% of reference mask
+                if seg_result.mask.sum() < min_voxels:
+                    logger.info(f"Slice {idx}: mask too small ({seg_result.mask.sum()} < {min_voxels}), stopping propagation.")
+                    continue
                 _nu.set_slice(result, idx, seg_result.mask, axis)
             except Exception as exc:
                 logger.warning(f"SAM propagation failed at slice {idx}: {exc}")

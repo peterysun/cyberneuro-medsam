@@ -233,7 +233,7 @@ class SegmentationOrchestrator:
             results[idx] = self.segment_slice(idx)
         return results
 
-    def propagate_to_volume(self) -> np.ndarray:
+    def propagate_to_volume(self, slice_range: tuple = None) -> np.ndarray:
         """Propagate prompted-slice segmentations to the full 3D volume.
 
         Strategy (see Propagator for details):
@@ -245,7 +245,6 @@ class SegmentationOrchestrator:
         self._require_session()
         assert self._reader is not None and self._mask_volume is not None
 
-        # Infer all prompted slices first
         prompted = self._prompt_manager.prompted_slices()  # type: ignore[union-attr]
         if not prompted:
             raise RuntimeError("No prompts available. Add at least one box/point prompt first.")
@@ -259,14 +258,26 @@ class SegmentationOrchestrator:
         ax = self._prompt_manager.axis  # type: ignore[union-attr]
         n_total = self._reader.num_slices(axis=ax)
 
-        self._mask_volume = self._propagator.propagate(  # type: ignore[union-attr]
+        # Filter prompted slices to only those within slice_range
+        if slice_range is not None:
+            z_min, z_max = slice_range
+            prompted_filtered = [s for s in prompted if z_min <= s < z_max]
+        else:
+            prompted_filtered = prompted
+
+        self._mask_volume = self._propagator.propagate(
             image_volume=self._reader.volume_norm,
             partial_mask=self._mask_volume,
-            prompted_slices=prompted,
+            prompted_slices=prompted_filtered,
             axis=ax,
             n_total=n_total,
             prompt_manager=self._prompt_manager,
         )
+
+        # Zero out anything outside the allowed axial range
+        if slice_range is not None:
+            self._mask_volume[:, :, :z_min] = 0
+            self._mask_volume[:, :, z_max:] = 0
 
         elapsed = time.time() - t0
         total_voxels = int(self._mask_volume.sum())
@@ -429,7 +440,6 @@ class SegmentationOrchestrator:
         )
         prompt_dicts = [p.to_dict() for p in prompts_on_slice]
 
-        # Build RGB array in memory
         import numpy as np
         H, W = img.shape
         img_u8 = (np.clip(img, 0, 1) * 255).astype(np.uint8)
@@ -446,7 +456,6 @@ class SegmentationOrchestrator:
                 )
             rgb = overlay.clip(0, 255).astype(np.uint8)
 
-        # Draw prompts
         if prompt_dicts:
             from PIL import Image, ImageDraw
             pil_img = Image.fromarray(rgb)
