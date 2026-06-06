@@ -40,6 +40,53 @@ import { getMockVisualization, getAllMockVisualizations } from './mockVisualizat
 import { useWorkflow } from './hooks/useWorkflow';
 import { datasetToCSV, parseCSV} from './utils/stats';
 
+function convertWMTractCsv(text: string): string {
+  const JHU_TO_TRACTSEG: Record<string, string> = {
+    'Anterior_corona_radiata_L': 'CCing_left', 'Anterior_corona_radiata_R': 'CCing_right',
+    'Corticospinal_tract_L': 'CST_left', 'Corticospinal_tract_R': 'CST_right',
+    'Cingulum_cingulate_gyrus_L': 'CG_left', 'Cingulum_cingulate_gyrus_R': 'CG_right',
+    'Inferior_fronto-occipital_fasciculus_L': 'IFO_left', 'Inferior_fronto-occipital_fasciculus_R': 'IFO_right',
+    'Superior_longitudinal_fasciculus_L': 'SLF_left', 'Superior_longitudinal_fasciculus_R': 'SLF_right',
+    'Uncinate_fasciculus_L': 'UF_left', 'Uncinate_fasciculus_R': 'UF_right',
+    'Genu_of_corpus_callosum': 'CC_1', 'Body_of_corpus_callosum': 'CC_3', 'Splenium_of_corpus_callosum': 'CC_7',
+    'Middle_cerebellar_peduncle': 'MCP', 'Pontine_crossing_tract': 'PCT',
+    'Cingulum_hippocampus_L': 'CA_left', 'Cingulum_hippocampus_R': 'CA_right',
+    'Posterior_limb_of_internal_capsule_L': 'PLIC_left', 'Posterior_limb_of_internal_capsule_R': 'PLIC_right',
+    'Sagittal_stratum_L': 'SS_left', 'Sagittal_stratum_R': 'SS_right',
+    'Fornix': 'FX_left', 'Tapetum_L': 'T_PREF_left', 'Tapetum_R': 'T_PREF_right',
+  };
+  const METRIC_MAP: Record<string, string> = {
+    'FA_mean': 'fa-mean', 'fa_mean': 'fa-mean',
+    'MD_mean': 'md-mean', 'md_mean': 'md-mean',
+    'volume_mm3': 'volume', 'volume_voxels': 'volume', 'volume': 'volume',
+  };
+  const lines = text.trim().split('\n').filter((l: string) => l.trim());
+  const headers = lines[0].split(',').map((h: string) => h.trim());
+  if (!headers.includes('tract_name')) return text;
+  const rows = lines.slice(1).map((line: string) => {
+    const vals = line.split(',').map((v: string) => v.trim());
+    const row: Record<string, string> = {};
+    headers.forEach((h: string, i: number) => { row[h] = vals[i] ?? ''; });
+    return row;
+  });
+  const subjectMap: Record<string, Record<string, string>> = {};
+  for (const row of rows) {
+    const subj = row['subject'] || row['SubjectID'] || row['ID'] || 'unknown';
+    if (!subjectMap[subj]) subjectMap[subj] = { age: row['age'] ?? '', sex: row['sex'] ?? '', diagnosis: row['diagnosis'] ?? '' };
+    const tractMapped = JHU_TO_TRACTSEG[row['tract_name']] || row['tract_name'];
+    if (!tractMapped) continue;
+    for (const [rawMetric, canonMetric] of Object.entries(METRIC_MAP)) {
+      if (row[rawMetric]) subjectMap[subj][`${tractMapped}-${canonMetric}`] = row[rawMetric];
+    }
+  }
+  const outputRows = Object.values(subjectMap);
+  if (outputRows.length === 0) throw new Error('No rows after conversion');
+  const allKeys = Array.from(new Set(outputRows.flatMap((r: any) => Object.keys(r))));
+  const orderedKeys = ['age', 'sex', 'diagnosis', ...allKeys.filter((k: string) => !['age','sex','diagnosis'].includes(k))];
+  return [orderedKeys.join(','), ...outputRows.map((r: any) => orderedKeys.map((k: string) => r[k] ?? '').join(','))].join('\n');
+}
+
+
 const VISUALIZER_AGENT = AgentType.EXECUTOR;
 const WORKFLOW_ABORTED_ERROR = '__WORKFLOW_ABORTED__';
 
@@ -680,6 +727,7 @@ const App: React.FC = () => {
 
   const handleFileUpload = async (files: FileList | null) => {
     if (!files) return;
+    console.log("handleFileUpload called with", files.length, "files:", Array.from(files).map(f => f.name));
     const fileList = Array.from(files);
 
     for (const file of fileList) {
@@ -704,6 +752,26 @@ const App: React.FC = () => {
         const reader = new FileReader();
         reader.onload = (e) => {
             const text = e.target?.result as string;
+            // Detect WM tract files and route to brain chart
+            const firstLine = text.split('\n')[0].toLowerCase();
+            const isWMTractFile = firstLine.includes('tract_name') ||
+                                  (firstLine.includes('fa_mean') && firstLine.includes('subject'));
+            if (isWMTractFile) {
+                try {
+                    console.log('WM tract file detected, converting...');
+                    const converted = convertWMTractCsv(text);
+                    console.log('Converted CSV preview:', converted.slice(0, 200));
+                    setVisualizations(prev => prev.map(v =>
+                        v.type === VisualizationType.WM_BRAIN_CHART
+                            ? { ...v, data: { ...v.data, externalPatientCsv: converted } }
+                            : v
+                    ));
+                    addMessage(AgentType.SYSTEM, `WM tract file "${file.name}" auto-converted and loaded into brain chart.`);
+                    return;
+                } catch (err) {
+                    addMessage(AgentType.SYSTEM, `Could not auto-convert "${file.name}". Loading as regular dataset.`);
+                }
+            }
             loadData(text, file.name, serverFilename);
         };
         reader.readAsText(file);

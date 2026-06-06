@@ -555,7 +555,7 @@ const VisualizationCard: React.FC<{
 
         {visualization.type === VisualizationType.WM_BRAIN_CHART && (
           <div className="pointer-events-auto" onClick={e => e.stopPropagation()}>
-            <WMBrainChart data={visualization.data} />
+            <WMBrainChart data={visualization.data} externalPatientCsv={visualization.data.externalPatientCsv} />
           </div>
         )}
 
