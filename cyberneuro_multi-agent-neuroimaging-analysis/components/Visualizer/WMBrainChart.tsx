@@ -34,9 +34,21 @@ const METRIC_LABELS: Record<string, string> = {
 
 const NORMATIVE_BACKEND_URL = 'http://localhost:8100/align';
 
+const KNOWN_METRICS = ['fa-mean','md-mean','ad-mean','rd-mean','volume','surface_area','avg_length'];
+
 function extractTracts(tractMetrics: string[]): string[] {
   const tracts = new Set<string>();
-  tractMetrics.forEach(tm => { const i = tm.lastIndexOf('-'); if (i > 0) tracts.add(tm.substring(0, i)); });
+  tractMetrics.forEach(tm => {
+    for (const metric of KNOWN_METRICS) {
+      if (tm.endsWith('-' + metric)) {
+        tracts.add(tm.slice(0, -(metric.length + 1)));
+        return;
+      }
+    }
+    // fallback: split on last dash
+    const i = tm.lastIndexOf('-');
+    if (i > 0) tracts.add(tm.substring(0, i));
+  });
   return Array.from(tracts).sort();
 }
 

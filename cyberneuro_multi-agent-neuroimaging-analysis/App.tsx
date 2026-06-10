@@ -1662,9 +1662,19 @@ const App: React.FC = () => {
 
       wf.startNewQuery(query, messagesRef.current.length);
       addMessage(AgentType.ORCHESTRATOR, forceIntent ? `Intent forced: ${forceIntent}` : "Evaluating query intent...");
-      const intent = forceIntent
-        ? (forceIntent as Awaited<ReturnType<typeof classifyQuery>>)
-        : await classifyQuery(query);
+      // Keyword shortcut — bypass slow Ollama classification for known intents
+      const wmKeywords = ['white matter', 'wm brain', 'brain chart', 'normative scoring', 'wm chart', 'tractography', 'white matter brain'];
+      const segKeywords = ['segment', 'segmentation', 'outline', 'delineate', '.nii'];
+      let intent: Awaited<ReturnType<typeof classifyQuery>>;
+      if (forceIntent) {
+        intent = forceIntent as Awaited<ReturnType<typeof classifyQuery>>;
+      } else if (wmKeywords.some(kw => query.toLowerCase().includes(kw))) {
+        intent = 'WM_ANALYSIS';
+      } else if (segKeywords.some(kw => query.toLowerCase().includes(kw))) {
+        intent = 'SEGMENTATION';
+      } else {
+        intent = await classifyQuery(query);
+      }
       throwIfWorkflowAborted(runId);
       const hasImageContext = uploadedImages.length > 0;
       const effectiveIntent = (!activeDataset && hasImageContext && intent !== 'VISION') ? 'VISION' : intent;
@@ -1815,6 +1825,7 @@ const App: React.FC = () => {
       }
 
           // ── WM_ANALYSIS intent ──
+    console.log('DEBUG effectiveIntent:', effectiveIntent);
     if (effectiveIntent === 'WM_ANALYSIS') {
       addMessage(AgentType.ORCHESTRATOR, "Loading white matter brain chart...");
 
