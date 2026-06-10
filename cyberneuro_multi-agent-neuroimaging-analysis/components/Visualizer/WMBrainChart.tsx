@@ -118,16 +118,15 @@ function normalizeSex(val: string): string {
   return 'unknown';
 }
 
-function parsePatientCsv(text: string): PatientResult[] {
+function parsePatientCsv(text: string, tractMetricKey: string): PatientResult[] {
   const delimiter = autoDetectDelimiter(text);
   const lines = text.trim().split('\n').filter(l => l.trim().length > 0);
   if (lines.length < 2) return [];
 
   const rawHeaders = parseCsvLine(lines[0], delimiter);
   const headerMap = normalizeHeaders(rawHeaders);
-  const skip = new Set(['age', 'sex', 'diagnosis', 'dataset', 'subject', 'subject_id', 'id']);
-
   const results: PatientResult[] = [];
+  const normalizedTarget = tractMetricKey.toLowerCase().trim();
 
   for (let i = 1; i < lines.length; i++) {
     const values = parseCsvLine(lines[i], delimiter);
@@ -142,10 +141,9 @@ function parsePatientCsv(text: string): PatientResult[] {
     const age = parseFloat(row['age'] ?? '');
     if (!Number.isFinite(age)) continue;
 
-    // Find the first numeric non-metadata column as the measure
     const measureCol = rawHeaders.find(h => {
       const canonical = headerMap[h];
-      return !skip.has(canonical.toLowerCase()) && Number.isFinite(parseFloat(row[canonical]));
+      return canonical.toLowerCase().trim() === normalizedTarget;
     });
 
     const value = measureCol ? parseFloat(row[headerMap[measureCol]]) : NaN;
@@ -246,6 +244,11 @@ export const WMBrainChart: React.FC<WMBrainChartProps> = ({ data, externalPatien
   const [isScoring,      setIsScoring]      = useState<boolean>(false);
   const [scoringError,   setScoringError]   = useState<string>('');
   const [rawCsvText,     setRawCsvText]     = useState<string>('');
+  const [parseWarning,   setParseWarning]   = useState<string>('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const chartData = useMemo(() => buildChartData(data.csv, selectedTract, selectedMetric, sex), [data.csv, selectedTract, selectedMetric, sex]);
+  const tractMetricKey = `${selectedTract}-${selectedMetric}`;
 
   // Auto-load externally provided patient CSV from Add CSV in right panel
   React.useEffect(() => {
@@ -261,15 +264,15 @@ export const WMBrainChart: React.FC<WMBrainChartProps> = ({ data, externalPatien
     const headers = lines[0].split(',').map((h: string) => h.trim());
     const skip = new Set(['age','sex','diagnosis','dataset','subject','subject_id','id','label_index']);
 
-    // Find the first usable numeric column — check all rows not just first
-    const measureCol = headers.find((h: string) => {
-      if (skip.has(h.toLowerCase())) return false;
-      const hIdx = headers.indexOf(h);
-      return lines.slice(1).some((line: string) => {
-        const val = line.split(',')[hIdx]?.trim();
-        return val !== undefined && val !== '' && Number.isFinite(parseFloat(val));
+    const measureCol = headers.find((h: string) => h.toLowerCase().trim() === tractMetricKey.toLowerCase().trim())
+      || headers.find((h: string) => {
+        if (skip.has(h.toLowerCase())) return false;
+        const hIdx = headers.indexOf(h);
+        return lines.slice(1).some((line: string) => {
+          const val = line.split(',')[hIdx]?.trim();
+          return val !== undefined && val !== '' && Number.isFinite(parseFloat(val));
+        });
       });
-    });
 
     if (!measureCol) { setParseWarning('No valid numeric tract-metric columns found after conversion.'); return; }
 
@@ -297,12 +300,7 @@ export const WMBrainChart: React.FC<WMBrainChartProps> = ({ data, externalPatien
     if (missingAge) {
       setParseWarning(`${rows.length} subject(s) loaded. Age not found in file — enter age manually below to plot on chart.`);
     }
-  }, [externalPatientCsv]);
-  const [parseWarning,   setParseWarning]   = useState<string>('');
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const chartData = useMemo(() => buildChartData(data.csv, selectedTract, selectedMetric, sex), [data.csv, selectedTract, selectedMetric, sex]);
-
+  }, [externalPatientCsv, tractMetricKey]);
   // yDomain expands to include patient dots so they're never clipped
   const yDomain = useMemo((): [number, number] => {
     if (chartData.length === 0) return [0, 1];
@@ -316,7 +314,7 @@ export const WMBrainChart: React.FC<WMBrainChartProps> = ({ data, externalPatien
       }
     });
     const pad = (max - min) * 0.12;
-    return [min - pad, max + pad];
+    return [Math.max(0, min - pad), max + pad];
   }, [chartData, patients]);
 
   const singlePatientDot = useMemo(() => {
@@ -329,15 +327,54 @@ export const WMBrainChart: React.FC<WMBrainChartProps> = ({ data, externalPatien
     setRawCsvText(text);
     setScoringError('');
     setParseWarning('');
-    const parsed = parsePatientCsv(text).map(p => ({ ...p, centileScore: undefined }));
-    if (parsed.length === 0) {
-      setParseWarning('No valid patients found. Check that your CSV has age and at least one numeric column.');
-    } else {
+
+    const parsed = parsePatientCsv(text, tractMetricKey).map(p => ({ ...p, centileScore: undefined }));
+    if (parsed.length > 0) {
+      setPatients(parsed);
+      setCsvFileName(fileName);
       setParseWarning('');
+      return;
     }
-    setPatients(parsed);
+
+    // No age column — try loading without age filter
+    const lines = text.trim().split('\n').filter((l: string) => l.trim());
+    if (lines.length >= 2) {
+      const headers = lines[0].split(',').map((h: string) => h.trim());
+      const skip = new Set(['age','sex','diagnosis','dataset','subject','subject_id','id','label_index','tract_name']);
+      const measureCol = headers.find((h: string) => h.toLowerCase().trim() === tractMetricKey.toLowerCase().trim())
+        || headers.find((h: string) => {
+          if (skip.has(h.toLowerCase())) return false;
+          return lines.slice(1).some((line: string) => {
+            const val = line.split(',')[headers.indexOf(h)]?.trim();
+            return val !== undefined && val !== '' && Number.isFinite(parseFloat(val));
+          });
+        });
+      if (measureCol) {
+        const rows = lines.slice(1).map((line: string, idx: number) => {
+          const values = line.split(',').map((v: string) => v.trim());
+          const row: Record<string, string> = {};
+          headers.forEach((h: string, i: number) => { row[h] = values[i] ?? ''; });
+          const ageVal = parseFloat(row['age'] ?? '');
+          return {
+            id: `P${String(idx + 1).padStart(3, '0')}`,
+            age: Number.isFinite(ageVal) ? ageVal : 0,
+            sex: row['sex'] === '1' ? 'male' : (row['sex'] === '0' ? 'female' : 'unknown'),
+            diagnosis: row['diagnosis'] || 'CN',
+            value: parseFloat(row[measureCol]),
+            centileScore: undefined as number | undefined,
+          };
+        }).filter((p: any) => Number.isFinite(p.value));
+        if (rows.length > 0) {
+          setPatients(rows);
+          setCsvFileName(fileName);
+          setParseWarning('Age not found in file — enter age manually below to plot on chart.');
+          return;
+        }
+      }
+    }
+    setParseWarning(`No valid patients found. Check that your CSV has age and the selected metric column: ${tractMetricKey}.`);
     setCsvFileName(fileName);
-  }, []);
+  }, [tractMetricKey]);
 
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -370,7 +407,26 @@ export const WMBrainChart: React.FC<WMBrainChartProps> = ({ data, externalPatien
     }
   }, [rawCsvText, selectedTract, selectedMetric]);
 
-  const tractMetricKey = `${selectedTract}-${selectedMetric}`;
+  // Re-derive patient values based on currently selected tract+metric
+  const patientsWithValues = useMemo(() => {
+    if (patients.length === 0) return patients;
+    return patients.map(p => {
+      // Try to get value from rawCsvText for the selected tract-metric
+      if (!rawCsvText) return p;
+      const lines = rawCsvText.trim().split('\n').filter((l: string) => l.trim());
+      if (lines.length < 2) return p;
+      const headers = lines[0].split(',').map((h: string) => h.trim());
+      const colKey = `${selectedTract}-${selectedMetric}`;
+      const colIdx = headers.indexOf(colKey);
+      if (colIdx === -1) return p;
+      const patientIdx = parseInt(p.id.replace('P', '')) - 1;
+      const line = lines[patientIdx + 1];
+      if (!line) return p;
+      const vals = line.split(',');
+      const val = parseFloat(vals[colIdx]);
+      return Number.isFinite(val) ? { ...p, value: val } : p;
+    });
+  }, [patients, rawCsvText, selectedTract, selectedMetric]);
   const hasData = chartData.length > 0;
   const hasPatients = patients.length > 0;
   const scoredPatients = patients.filter(p => p.centileScore !== undefined);
@@ -436,7 +492,7 @@ export const WMBrainChart: React.FC<WMBrainChartProps> = ({ data, externalPatien
 
       {hasData
         ? <ChartPanel chartData={chartData} yDomain={yDomain} metricLabel={METRIC_LABELS[selectedMetric] || selectedMetric}
-            patients={patients} singlePatientDot={singlePatientDot} hasPatients={hasPatients} />
+            patients={patientsWithValues} singlePatientDot={singlePatientDot} hasPatients={hasPatients} />
         : <div className="flex items-center justify-center text-slate-500 text-sm" style={{ height: 300 }}>
             No normative data available for {tractMetricKey} ({sex})
           </div>
@@ -501,7 +557,7 @@ export const WMBrainChart: React.FC<WMBrainChartProps> = ({ data, externalPatien
                 ))}</tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
-                {patients.map((p, idx) => {
+                {patientsWithValues.map((p, idx) => {
                   const color = centileColor(p.centileScore);
                   const isAbnormal = p.centileScore !== undefined && (p.centileScore < 0.05 || p.centileScore > 0.95);
                   return (
