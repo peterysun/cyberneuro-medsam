@@ -289,6 +289,91 @@ class SegmentationOrchestrator:
 
         return self._mask_volume
 
+    def self_correct_sparse_slices(
+        self,
+        slice_range: tuple = None,
+        drop_fraction: float = 0.60,
+        bbox_expand: float = 0.12,
+    ) -> Dict[str, Any]:
+        """Re-run slices whose mask area drops sharply below the volume median.
+
+        A slice is considered suspicious when its foreground area is more than
+        ``drop_fraction`` below the median non-empty slice area. The replacement
+        prompt is derived from the nearest healthy neighboring slice.
+        """
+        self._require_session()
+        assert self._reader is not None and self._mask_volume is not None
+
+        from ..core.propagation import _mask_to_bbox
+        from ..models.base_adapter import Prompt
+
+        ax = self._prompt_manager.axis  # type: ignore[union-attr]
+        n_total = self._reader.num_slices(axis=ax)
+        start, stop = slice_range if slice_range is not None else (0, n_total)
+        start = max(0, int(start))
+        stop = min(n_total, int(stop))
+
+        indexed_areas = [
+            (idx, int(self._get_mask_slice(idx, ax).sum()))
+            for idx in range(start, stop)
+        ]
+        nonzero_areas = [area for _, area in indexed_areas if area > 0]
+        if not nonzero_areas:
+            return {"corrected": [], "median_area": 0, "threshold_area": 0}
+
+        median_area = float(np.median(nonzero_areas))
+        threshold_area = median_area * (1.0 - drop_fraction)
+        healthy = [idx for idx, area in indexed_areas if area >= threshold_area]
+        corrected: List[Dict[str, Any]] = []
+
+        for idx, area in indexed_areas:
+            if area >= threshold_area:
+                continue
+
+            candidates = [s for s in healthy if s != idx]
+            if not candidates:
+                continue
+            ref_idx = min(candidates, key=lambda s: abs(s - idx))
+            ref_mask = self._get_mask_slice(ref_idx, ax)
+            box = _mask_to_bbox(ref_mask, expand=bbox_expand)
+            if box is None:
+                continue
+
+            img_slice = self._reader.get_slice(idx, axis=ax, normalized=True)
+            prompt = Prompt(
+                slice_idx=idx,
+                axis=ax,
+                prompt_type="box",
+                box=box,
+                meta={"source": "self_correction", "ref_slice": ref_idx},
+            )
+            try:
+                result = self.adapter.predict_slice(img_slice, prompt)
+            except Exception as exc:
+                logger.warning(f"Self-correction failed at slice {idx}: {exc}")
+                continue
+
+            new_area = int(result.mask.sum())
+            if new_area > area:
+                self._set_mask_slice(idx, ax, result.mask)
+                corrected.append(
+                    {
+                        "slice": idx,
+                        "old_area": area,
+                        "new_area": new_area,
+                        "ref_slice": ref_idx,
+                        "box": box,
+                    }
+                )
+
+        if corrected:
+            logger.info(f"Self-corrected {len(corrected)} sparse slices.")
+        return {
+            "corrected": corrected,
+            "median_area": median_area,
+            "threshold_area": threshold_area,
+        }
+
     # ── Refinement ────────────────────────────────────────────────────────────
 
     def refine_slice(

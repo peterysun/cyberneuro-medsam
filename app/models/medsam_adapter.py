@@ -171,6 +171,51 @@ class MedSAMAdapter(BaseSegAdapter):
             confidence=confidence,
         )
 
+    def predict_preprocessed_1024(
+        self,
+        image_1024: np.ndarray,
+        box_1024: List[float],
+        slice_idx: int = 0,
+    ) -> SegResult:
+        """Segment an already-preprocessed 1024x1024 slice.
+
+        Monica's ShMoLLI kidney inference script applies its fixed kidney boxes
+        directly in 1024-space after resize and min-max normalization. This
+        method preserves that coordinate convention instead of re-scaling a
+        native-resolution prompt.
+        """
+        self._require_loaded()
+
+        if image_1024.shape[:2] != (self.IMG_SIZE, self.IMG_SIZE):
+            raise ValueError(
+                "predict_preprocessed_1024 expects a 1024x1024 image, "
+                f"got {image_1024.shape[:2]}"
+            )
+
+        device = next(self._model.parameters()).device
+        img = image_1024.astype(np.float32)
+        img_3c = np.stack([img, img, img], axis=0)
+        img_tensor = torch.from_numpy(img_3c).unsqueeze(0).to(device)
+        box_arr = np.array(box_1024, dtype=np.float32)[None, :]
+
+        with torch.no_grad():
+            img_embed = self._model.image_encoder(img_tensor)
+            mask, logits = _medsam_decode(
+                self._model, img_embed, box_arr, self.IMG_SIZE, self.IMG_SIZE
+            )
+
+        mask_np = mask.cpu().numpy().squeeze().astype(np.uint8)
+        logits_np = logits.cpu().numpy().squeeze()
+        confidence = float(torch.sigmoid(torch.tensor(logits_np)).mean())
+
+        return SegResult(
+            slice_idx=slice_idx,
+            mask=mask_np,
+            logits=logits_np,
+            confidence=confidence,
+            meta={"box_space": "1024"},
+        )
+
     def predict_volume(
         self,
         image_volume: np.ndarray,

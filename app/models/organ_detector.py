@@ -1,6 +1,6 @@
 """
 UNet-based organ bounding box detector.
-Replaces hardcoded organs.yaml bbox fractions in medsam_server.py.
+Supports both CT (4 organs) and MRI (2 organs) models.
 """
 
 import numpy as np
@@ -8,17 +8,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from scipy.ndimage import zoom
-from pathlib import Path
 
 
-ORGAN_TO_IDX = {
+CT_ORGAN_TO_IDX = {
     'liver': 0,
     'right_kidney': 1,
     'spleen': 2,
     'left_kidney': 3,
 }
 
-IDX_TO_ORGAN = {v: k for k, v in ORGAN_TO_IDX.items()}
+MRI_ORGAN_TO_IDX = {
+    'right_kidney': 0,
+    'left_kidney': 1,
+}
 
 
 class ConvBlock(nn.Module):
@@ -37,7 +39,7 @@ class ConvBlock(nn.Module):
 
 
 class OrganBBoxUNet(nn.Module):
-    def __init__(self):
+    def __init__(self, num_organs=4):
         super().__init__()
         self.enc1 = ConvBlock(1, 32)
         self.enc2 = ConvBlock(32, 64)
@@ -45,7 +47,7 @@ class OrganBBoxUNet(nn.Module):
         self.enc4 = ConvBlock(128, 256)
         self.pool = nn.MaxPool2d(2)
         self.gap = nn.AdaptiveAvgPool2d(1)
-        self.organ_embed = nn.Linear(4, 64)
+        self.organ_embed = nn.Linear(num_organs, 64)
         self.head = nn.Sequential(
             nn.Linear(256 + 64, 256),
             nn.ReLU(),
@@ -57,33 +59,36 @@ class OrganBBoxUNet(nn.Module):
         )
 
     def forward(self, img, organ_vec):
-        x = self.enc1(img)
-        x = self.pool(x)
-        x = self.enc2(x)
-        x = self.pool(x)
-        x = self.enc3(x)
-        x = self.pool(x)
+        x = self.enc1(img); x = self.pool(x)
+        x = self.enc2(x);   x = self.pool(x)
+        x = self.enc3(x);   x = self.pool(x)
         x = self.enc4(x)
         x = self.gap(x).squeeze(-1).squeeze(-1)
         organ_feat = F.relu(self.organ_embed(organ_vec))
-        combined = torch.cat([x, organ_feat], dim=1)
-        return self.head(combined)
+        return self.head(torch.cat([x, organ_feat], dim=1))
 
 
 class OrganDetector:
-    def __init__(self, checkpoint_path: str, device: str = "cpu"):
+    def __init__(self, checkpoint_path: str, modality: str = "ct", device: str = "cpu"):
         self.device = device
-        self.model = OrganBBoxUNet().to(device)
-        self.model.load_state_dict(
-            torch.load(checkpoint_path, map_location=device)
-        )
+        self.modality = modality.lower()
+
+        if self.modality == "mri":
+            self.organ_to_idx = MRI_ORGAN_TO_IDX
+            num_organs = 2
+        else:
+            self.organ_to_idx = CT_ORGAN_TO_IDX
+            num_organs = 4
+
+        self.model = OrganBBoxUNet(num_organs=num_organs).to(device)
+        self.model.load_state_dict(torch.load(checkpoint_path, map_location=device))
         self.model.eval()
 
     def predict_bbox(self, volume, organ, axial_range, img_size=256):
-        if organ not in ORGAN_TO_IDX:
+        if organ not in self.organ_to_idx:
             return [0.1, 0.1, 0.9, 0.9]
 
-        H, W, D = volume.shape
+        H, W, D = volume.shape[:3]
         z = int((axial_range[0] * 0.5 + axial_range[1] * 0.5) * D)
         z = max(0, min(z, D - 1))
         img_slice = volume[:, :, z].astype(np.float32)
@@ -92,10 +97,11 @@ class OrganDetector:
         img_slice = np.clip((img_slice - p1) / (p99 - p1 + 1e-8), 0, 1)
 
         img_resized = zoom(img_slice, (img_size / H, img_size / W), order=1)
-
         img_tensor = torch.tensor(img_resized, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(self.device)
-        organ_vec = torch.zeros(1, 4, dtype=torch.float32).to(self.device)
-        organ_vec[0, ORGAN_TO_IDX[organ]] = 1.0
+
+        num_organs = len(self.organ_to_idx)
+        organ_vec = torch.zeros(1, num_organs, dtype=torch.float32).to(self.device)
+        organ_vec[0, self.organ_to_idx[organ]] = 1.0
 
         with torch.no_grad():
             bbox = self.model(img_tensor, organ_vec).squeeze(0).cpu().numpy()
