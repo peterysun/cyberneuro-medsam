@@ -55,6 +55,18 @@ SHMOLLI_BOXES_1024 = {
     "right_kidney": [580, 260, 860, 700],
     "left_kidney": [160, 260, 420, 700],
 }
+SHMOLLI_BOX_ENSEMBLES_1024 = {
+    "right_kidney": [
+        [580, 260, 860, 700],
+        [600, 285, 845, 680],
+        [615, 305, 830, 660],
+    ],
+    "left_kidney": [
+        [160, 260, 420, 700],
+        [180, 285, 400, 680],
+        [195, 305, 385, 660],
+    ],
+}
 
 
 @app.on_event("startup")
@@ -118,10 +130,15 @@ def _segment_shmolli_mri(
     img_1024 = _minmax(img_1024)
 
     box_1024 = SHMOLLI_BOXES_1024[organ_key]
+    ensemble_boxes = SHMOLLI_BOX_ENSEMBLES_1024[organ_key]
     adapter = _get_adapter("mri")
-    result = adapter.predict_preprocessed_1024(img_1024, box_1024, slice_idx=0)
+    masks_1024 = [
+        adapter.predict_preprocessed_1024(img_1024, box, slice_idx=0).mask
+        for box in ensemble_boxes
+    ]
+    mask_1024 = (np.mean(np.stack(masks_1024, axis=0), axis=0) >= 0.5).astype(np.uint8)
 
-    rotated = np.rot90(result.mask, k=3, axes=(0, 1)).astype(np.uint8)
+    rotated = np.rot90(mask_1024, k=3, axes=(0, 1)).astype(np.uint8)
     mask_native = resize(
         rotated,
         raw_slice.shape,
@@ -129,6 +146,9 @@ def _segment_shmolli_mri(
         preserve_range=True,
         anti_aliasing=False,
     ).astype(np.uint8)
+    mask_native, postprocess_meta = _postprocess_shmolli_mask(
+        mask_native, raw_slice.shape, box_1024
+    )
     mask_volume = mask_native[:, :, np.newaxis]
 
     case_dir = OUTPUT_DIR / Path(req.scan_path).stem.replace(".nii", "")
@@ -157,7 +177,9 @@ def _segment_shmolli_mri(
                     "meta": {
                         "source": "monica_shmolli_04_infer",
                         "box_space": "1024_after_resize",
+                        "ensemble_boxes": ensemble_boxes,
                         "output_rotation": "np.rot90(mask, k=3, axes=(0,1))",
+                        "postprocess": postprocess_meta,
                     },
                 }
             ],
@@ -175,7 +197,9 @@ def _segment_shmolli_mri(
         "voxel_count": int(mask_volume.sum()),
         "seeds_used": [0],
         "box_used": box_1024,
+        "ensemble_boxes": ensemble_boxes,
         "box_space": "1024",
+        "postprocess": postprocess_meta,
         "scan_shape": list(volume.shape),
         "mode": "2D ShMoLLI Monica preprocessing",
     }
@@ -305,6 +329,126 @@ def _minmax(image: np.ndarray) -> np.ndarray:
     if hi <= lo:
         return np.zeros_like(image, dtype=np.float32)
     return ((image - lo) / (hi - lo)).astype(np.float32)
+
+
+def _postprocess_shmolli_mask(
+    mask: np.ndarray,
+    native_shape: tuple[int, int],
+    box_1024: List[int],
+) -> tuple[np.ndarray, Dict[str, Any]]:
+    """Clean ShMoLLI kidney masks using the rotated native bbox as a prior."""
+    from scipy import ndimage as ndi
+
+    H, W = native_shape
+    x1, y1, x2, y2 = _rotated_box_to_native(box_1024, native_shape)
+    bw = x2 - x1 + 1
+    bh = y2 - y1 + 1
+
+    # Monica's boxes are intentionally generous. After rotation, trim them to
+    # the kidney-bearing center and prevent inferior spill into adjacent tissue.
+    trim_x = int(0.18 * bw)
+    trim_y_top = int(0.08 * bh)
+    trim_y_bottom = int(0.26 * bh)
+    tx1 = max(0, x1 + trim_x)
+    tx2 = min(W - 1, x2 - trim_x)
+    ty1 = max(0, y1 + trim_y_top)
+    ty2 = min(H - 1, y2 - trim_y_bottom)
+
+    prior = np.zeros((H, W), dtype=bool)
+    prior[ty1 : ty2 + 1, tx1 : tx2 + 1] = True
+
+    yy, xx = np.ogrid[:H, :W]
+    cx = (tx1 + tx2) / 2.0
+    cy = (ty1 + ty2) / 2.0
+    rx = max(1.0, (tx2 - tx1 + 1) * 0.56)
+    ry = max(1.0, (ty2 - ty1 + 1) * 0.64)
+    oval = ((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2 <= 1.0
+
+    cleaned = (mask > 0) & prior & oval
+    cleaned = ndi.binary_opening(cleaned, structure=np.ones((3, 3), dtype=bool))
+    cleaned = ndi.binary_closing(cleaned, structure=np.ones((5, 5), dtype=bool))
+    cleaned = ndi.binary_fill_holes(cleaned)
+    cleaned = _largest_component(cleaned)
+
+    # If the model output was fragmented after prior clipping, fall back to the
+    # conservative oval-intersection before returning an empty mask.
+    if not cleaned.any():
+        cleaned = _largest_component((mask > 0) & prior)
+
+    cleaned = _ellipse_regularized_mask(cleaned, prior & oval)
+    cleaned = ndi.binary_opening(cleaned, structure=np.ones((3, 3), dtype=bool))
+    cleaned = ndi.binary_closing(cleaned, structure=np.ones((5, 5), dtype=bool))
+    cleaned = ndi.binary_fill_holes(cleaned)
+    return cleaned.astype(np.uint8), {
+        "native_box_after_rotation": [x1, y1, x2, y2],
+        "tight_native_box": [tx1, ty1, tx2, ty2],
+        "strategy": "largest_component_covariance_ellipse_prior",
+    }
+
+
+def _largest_component(mask: np.ndarray) -> np.ndarray:
+    from scipy import ndimage as ndi
+
+    labels, n_labels = ndi.label(mask)
+    if n_labels == 0:
+        return np.zeros_like(mask, dtype=bool)
+    counts = np.bincount(labels.ravel())
+    counts[0] = 0
+    return labels == int(counts.argmax())
+
+
+def _ellipse_regularized_mask(component: np.ndarray, allowed: np.ndarray) -> np.ndarray:
+    """Return a smooth ellipse fitted to a component, clipped by allowed prior."""
+    ys, xs = np.nonzero(component)
+    if len(xs) < 20:
+        return component
+
+    coords = np.column_stack([xs.astype(np.float64), ys.astype(np.float64)])
+    center = coords.mean(axis=0)
+    cov = np.cov(coords, rowvar=False)
+    vals, vecs = np.linalg.eigh(cov)
+    order = np.argsort(vals)[::-1]
+    vals = vals[order]
+    vecs = vecs[:, order]
+
+    centered = coords - center
+    projected = centered @ vecs
+    radii = np.array(
+        [
+            np.percentile(np.abs(projected[:, 0]), 94),
+            np.percentile(np.abs(projected[:, 1]), 93),
+        ],
+        dtype=np.float64,
+    )
+    radii = np.maximum(radii * np.array([1.38, 1.45]), [8.0, 8.0])
+
+    yy, xx = np.indices(component.shape)
+    grid = np.stack([xx - center[0], yy - center[1]], axis=-1)
+    proj0 = grid[..., 0] * vecs[0, 0] + grid[..., 1] * vecs[1, 0]
+    proj1 = grid[..., 0] * vecs[0, 1] + grid[..., 1] * vecs[1, 1]
+    ellipse = (proj0 / radii[0]) ** 2 + (proj1 / radii[1]) ** 2 <= 1.0
+
+    # Keep the fitted shape anchored to where MedSAM was confident; this avoids
+    # growing into the adjacent bright structures while removing jagged edges.
+    return ellipse & allowed
+
+
+def _rotated_box_to_native(
+    box_1024: List[int],
+    native_shape: tuple[int, int],
+) -> List[int]:
+    H, W = native_shape
+    x1, y1, x2, y2 = [float(v) for v in box_1024]
+    rotated_x1 = 1023.0 - y2
+    rotated_x2 = 1023.0 - y1
+    rotated_y1 = x1
+    rotated_y2 = x2
+    return [
+        max(0, min(W - 1, int(round(rotated_x1 / 1024.0 * W)))),
+        max(0, min(H - 1, int(round(rotated_y1 / 1024.0 * H)))),
+        max(0, min(W - 1, int(round(rotated_x2 / 1024.0 * W)))),
+        max(0, min(H - 1, int(round(rotated_y2 / 1024.0 * H)))),
+    ]
 
 
 def _pad_bbox_frac(bbox: List[float], pad: float) -> List[float]:
